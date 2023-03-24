@@ -3,8 +3,9 @@ import random
 import time
 from pymongo import MongoClient
 from datetime import datetime, timedelta
-import requests
 from telegram import Update, ParseMode
+import telegram
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -12,13 +13,10 @@ from telegram.ext import (
     Filters,
     CallbackContext,
     CallbackQueryHandler,
-    Job,
 )
 from telegram.error import BadRequest
 from dotenv import load_dotenv
 import logging
-import matplotlib.pyplot as plt
-import seaborn as sns
 import json
 
 quotes = []
@@ -97,55 +95,64 @@ def stats(update: Update, context: CallbackContext) -> None:
     user_id = update.effective_user.id
     user = users.find_one({"user_id": user_id})
     if user is None:
+        send_typing(context.bot, update.effective_chat.id)
         context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="You haven't submitted any images yet.",
         )
         return
 
-    # Get longest streak
-    longest_streak = 0
-    streak_end_date = None
-    streak_start_date = None
-    for streak in user.get("streaks", []):
-        streak_length = (
-            streak.get("end_date", datetime.now()) - streak.get("start_date")
-        ).days + 1
-        if streak_length > longest_streak:
-            longest_streak = streak_length
-            streak_end_date = streak.get("end_date")
-            streak_start_date = streak.get("start_date")
-    longest_streak = max(longest_streak, user.get("current_streak", 0))
-
     # Get average submission rate
-    total_images = user.get("total_images", 0)
+    total_images = user["total_images"]
     if total_images == 0:
         avg_rate = 0
     else:
         created_date = datetime.strptime(user["created_at"], "%Y-%m-%d %H:%M:%S.%f")
         days_since_created = (datetime.now() - created_date).days
-        avg_rate = total_images / days_since_created
-
-    # Get leaderboard
-    leaderboard = []
-    for user in users.find({}, {"user_id": 1, "total_images": 1}):
-        leaderboard.append((user["user_id"], user["total_images"]))
-    leaderboard.sort(key=lambda x: x[1], reverse=True)
+        try:
+            avg_rate = total_images / days_since_created
+        except ZeroDivisionError:
+            avg_rate = 0
 
     stats_text = f"<b>Your image submission statistics</b>:\n\n"
     stats_text += f"<b>Total images submitted</b>: {user['total_images']}\n"
-    stats_text += f"<b>This week's streak</b>: {user.get('current_streak', 0)} / 7\n"
-    stats_text += f"<b>Longest streak</b>: {longest_streak} days ({streak_start_date.date()} - {streak_end_date.date()})\n"
+    stats_text += f"<b>This week's streak</b>: {user['current_streak']} / 7\n"
     stats_text += f"<b>Average submission rate</b>: {avg_rate:.2f} images/day\n\n"
-    stats_text += "<b>Leaderboard</b>:\n"
-    for i, (user_id, total_images) in enumerate(leaderboard[:10]):
-        stats_text += f"{i+1}. {user_id}: {total_images}\n"
+    # stats_text += "<b>Leaderboard</b>:\n\n"
+
+    # for i, (user_id, total_images) in enumerate(leaderboard[:10]):
+    #     stats_text += f"{i+1}. {user_id}: {total_images}\n"
+
     context.bot.send_animation(
-        chat_id=update.effective_chat.id,
+        chat_id=update.effective_user.id,
         animation=random.choice(gifs),
         caption=stats_text,
         parse_mode=ParseMode.HTML,
     )
+
+    # Define the start and end dates for the week you want to retrieve images for
+    start_of_week = datetime.now().date() - timedelta(days=datetime.now().weekday())
+    end_of_week = start_of_week + timedelta(days=7)
+
+    # Convert start_of_week and end_of_week to datetime.datetime objects
+    start_of_week = datetime.combine(start_of_week, datetime.min.time())
+    end_of_week = datetime.combine(end_of_week, datetime.max.time())
+
+    # Find all images uploaded during the current week
+    imagesSentByUser = images.find(
+        {
+            "user_id": user_id,
+            "timestamp": {"$gte": start_of_week, "$lt": end_of_week},
+        }
+    )
+
+    for image in imagesSentByUser:
+        send_typing(context.bot, update.effective_chat.id)
+        context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=image["image_url"],
+            parse_mode=ParseMode.HTML,
+        )
 
 
 def leaderboard(update: Update, context: CallbackContext) -> None:
@@ -166,32 +173,196 @@ def leaderboard(update: Update, context: CallbackContext) -> None:
             streakText += f"{i+1}. {sorted_streaks[i]['username']} - {sorted_streaks[i]['current_streak']}/7 🔥\n"
         else:
             streakText += f"{i+1}. {sorted_streaks[i]['username']} - {sorted_streaks[i]['current_streak']}/7\n"
+    send_typing(context.bot, update.effective_chat.id)
     context.bot.send_message(
         chat_id=update.effective_chat.id, text=streakText, parse_mode=ParseMode.HTML
     )
 
 
+def send_typing(bot, chat_id):
+    bot.send_chat_action(chat_id=chat_id, action=telegram.ChatAction.TYPING)
+    time.sleep(2)  # simulate typing for 2 seconds
+
+
+def button_handler(update, context):
+    query = update.callback_query
+    if query.data == "yes":
+        # Get the photo file ID from context
+        photo_id = context.user_data.get("file_id")
+        if photo_id:
+            send_typing(context.bot, update.effective_chat.id)
+
+            # # Define the progress bar message
+            # progress_message = context.bot.send_message(
+            #     chat_id=update.effective_chat.id,
+            #     text="Uploading images... [                    ]",
+            #     parse_mode=ParseMode.MARKDOWN,
+            # )
+
+            # # Simulate image upload
+            # for i in range(1, 11):
+            #     sleep_time = random.uniform(0, 0.000005)
+            #     time.sleep(sleep_time)
+            #     context.bot.edit_message_text(
+            #         chat_id=update.effective_chat.id,
+            #         message_id=progress_message.message_id,
+            #         text=f"Uploading images... {i*10}%",
+            #     )
+
+            user_id = update.effective_user.id
+            user = users.find_one({"user_id": user_id})
+            now = datetime.now()
+
+            user_data = {}
+
+            # Update the user's statistics and check the streak
+            if user is None:
+                user_data = {
+                    "user_id": user_id,
+                    "username": update.effective_user.username
+                    or update.effective_user.first_name,
+                    "total_images": 1,
+                    "current_streak": 1,
+                    "longest_streak": 0,
+                    "created_at": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                    "last_submission": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                }
+                users.insert_one(user_data)
+                message_text = (
+                    f"{user_data['username']} submitted his 1st gym proof of the week"
+                )
+                send_typing(context.bot, update.effective_chat.id)
+                # Send the message for the streak
+                context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=message_text,
+                )
+            else:
+                total_images = user["total_images"] + 1
+                last_submission = datetime.strptime(
+                    user["last_submission"], "%Y-%m-%d %H:%M:%S.%f"
+                )
+
+                message_text = ""
+
+                streak = user["current_streak"]
+                # if last_submission.date() < now.date():
+                #     streak += 1
+                # if streak <= 3:
+                #     message_text = f"{user['username']} submitted his {streak}{'st' if streak>1 else 'nd' if streak>2 else 'rd'} gym proof of the week"
+                # else:
+                #     message_text = (
+                #         f"{user['username']} submitted his {streak}th gym proof of the week"
+                #     )
+                # if streak > user.get("longest_streak", 0):
+                #     users.update_one({"user_id": user_id}, {"$set": {"longest_streak": streak}})
+                users.update_one(
+                    {"user_id": user_id},
+                    {
+                        "$set": {
+                            "total_images": total_images,
+                            "current_streak": streak,
+                            "last_submission": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                        }
+                    },
+                )
+
+            # Add the image to the database
+            image_url = context.user_data.get("image_url")
+            image_data = {
+                "user_id": user_id,
+                "image_url": image_url,
+                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
+            }
+            images.insert_one(image_data)
+
+            congrats_animations = [
+                "https://media.giphy.com/media/xT8qBepJQzUjXpeWU8/giphy.gif",
+                "https://media.giphy.com/media/jJQC2puVZpTMO4vUs0/giphy.gif",
+                "https://media.giphy.com/media/3oz8xAFtqoOUUrsh7W/giphy.gif",
+                "https://media.giphy.com/media/g9582DNuQppxC/giphy.gif",
+                "https://media.giphy.com/media/fdyZ3qI0GVZC0/giphy.gif",
+            ]
+
+            # Check if the user has completed their weekly submission
+            if user is not None and user["current_streak"] >= 3:
+                send_typing(context.bot, update.effective_chat.id)
+                context.bot.send_animation(
+                    chat_id=update.effective_chat.id,
+                    animation=random.choice(congrats_animations),
+                    caption="Congratulations! You have completed your weekly image submission.",
+                )
+            elif (
+                user is not None
+                and now.weekday() == 6
+                and (
+                    user.get("last_submission") is not None
+                    or user_data.get("last_submission") is not None
+                )
+            ):
+                users.update_one(
+                    {"user_id": user_id}, {"$set": {"current_streak": 0}}
+                )  # Reset the streak
+                send_typing(context.bot, update.effective_chat.id)
+                context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="Your weekly streak has been reset.",
+                )
+
+            # # Delete the progress bar message
+            # context.bot.delete_message(
+            #     chat_id=update.effective_chat.id,
+            #     message_id=progress_message.message_id,
+            # )
+
+            # context.bot.send_message(
+            #     chat_id=update.effective_chat.id,
+            #     text="Your image has been added",
+            # )
+
+            # Send gym proof count
+            current_streak = (
+                user.get("current_streak", 0) or user_data["current_streak"]
+            )
+            if current_streak == 1:
+                count_text = "1st"
+            elif current_streak == 2:
+                count_text = "2nd"
+            elif current_streak == 3:
+                count_text = "3rd"
+            else:
+                return  # Do not send anything if streak is less than 1 or more than 3
+
+            message = f"{user.get('username')} submitted his {count_text} gym proof of the week."
+            send_typing(context.bot, update.effective_chat.id)
+            context.bot.send_message(chat_id=update.effective_chat.id, text=message)
+
+            # Send leaderboard
+            send_typing(context.bot, update.effective_chat.id)
+            leaderboard = get_leaderboard(users)
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=leaderboard,
+                parse_mode=ParseMode.HTML,
+            )
+            query.answer()
+        else:
+            # If photo ID not found in context, return
+            query.answer(
+                text="Photo not found. Please upload an image first.", show_alert=True
+            )
+    elif query.data == "no":
+        query.answer()
+        query.edit_message_text("Okay, let's stop here then.")
+    else:
+        # If callback data not recognized, do nothing
+        pass
+    message_id = query.message.message_id
+    context.bot.delete_message(chat_id=query.message.chat_id, message_id=message_id)
+
+
 # Define the image message handler
 def image(update: Update, context: CallbackContext) -> None:
-
-    # Define the progress bar message
-    progress_message = context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="Uploading images... [                    ]",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-    # Simulate image upload
-    for i in range(1, 11):
-        sleep_time = random.uniform(0, 0.0005)
-        time.sleep(sleep_time)
-        context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=progress_message.message_id,
-            text=f"Uploading images... <b>{i*10}%</b>",
-            parse_mode=ParseMode.HTML,
-        )
-
     # Check if the message has an image
     if not update.message.photo:
         context.bot.send_message(
@@ -199,104 +370,51 @@ def image(update: Update, context: CallbackContext) -> None:
         )
         return
 
-    user_id = update.effective_user.id
-    user = users.find_one({"user_id": user_id})
-    now = datetime.now()
-
-    # Check if the user has submitted an image today
-    if user is not None and user.get("last_submission") is not None:
-        last_submission = datetime.strptime(
-            user["last_submission"], "%Y-%m-%d %H:%M:%S.%f"
-        )
-        # if last_submission.date() == now.date():
-        #     context.bot.send_message(
-        #         chat_id=update.effective_chat.id,
-        #         text="You have already submitted an image today.",
-        #     )
-        #     return
-
-    # Add the image to the database
+    # Get the photo file ID
     file_id = update.message.photo[-1].file_id
     image_url = context.bot.get_file(file_id).file_path
-    image_data = {
-        "user_id": user_id,
-        "image_url": image_url,
-        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
-    }
-    images.insert_one(image_data)
 
-    # Update the user's statistics
-    if user is None:
-        user_data = {
-            "user_id": user_id,
-            "username": update.effective_user.username
-            or update.effective_user.first_name,
-            "total_images": 1,
-            "current_streak": 1,
-            "longest_streak": 0,  # Add this line
-            "last_submission": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
-        }
-        users.insert_one(user_data)
-    else:
-        total_images = user["total_images"] + 1
-        if (
-            user.get("last_submission") is None
-            or last_submission.date() < (now - timedelta(days=1)).date()
-        ):
-            current_streak = user["current_streak"] + 1
-            if current_streak > user.get("longest_streak", 0):  # Add this block
-                longest_streak = current_streak
-            else:
-                longest_streak = user.get("longest_streak", 0)
-            if current_streak > 3:
-                context.bot.send_animation(
-                    chat_id=update.effective_chat.id,
-                    animation="https://tenor.com/bkLRs.gif",
-                    text="You're a warrior 🚀",
-                )
-        else:
-            current_streak = user["current_streak"]
-            longest_streak = user.get("longest_streak", 0)
-        users.update_one(
-            {"user_id": user_id},
+    # Ask the user if the photo is gym proof
+    keyboard = [
+        [
+            InlineKeyboardButton("Yes", callback_data="yes"),
+            InlineKeyboardButton("No", callback_data="no"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    sent_message = update.message.reply_text(
+        "Is this gym proof?", reply_markup=reply_markup
+    )
+
+    # Store the photo file ID in context for later use
+    context.user_data["sent_message_id"] = sent_message.message_id
+    context.user_data["file_id"] = file_id
+    context.user_data["image_url"] = image_url
+
+
+def get_leaderboard(users) -> str:
+    """Get the leaderboard of users sorted by their current streak."""
+    streaks = []
+    for user in users.find():
+        streaks.append(
             {
-                "$set": {
-                    "total_images": total_images,
-                    "current_streak": current_streak,
-                    "longest_streak": longest_streak,  # Add this line
-                    "last_submission": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
-                }
-            },
+                "username": user.get("username"),
+                "current_streak": user.get("current_streak", 0),
+                "longest_streak": user.get("longest_streak", 0),
+            }
         )
 
-    # Check if the user has completed their weekly submission
-    if user is not None and user["current_streak"] >= 3:
-        context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Congratulations! You have completed your weekly image submission.",
-        )
-    elif (
-        user is not None
-        and now.weekday() == 6
-        and user.get("last_submission") is not None
-    ):
-        users.update_one(
-            {"user_id": user_id}, {"$set": {"current_streak": 0}}
-        )  # Reset the streak
-        context.bot.send_message(
-            chat_id=update.effective_chat.id, text="Your weekly streak has been reset."
-        )
-
-    # Delete the progress bar message
-    context.bot.delete_message(
-        chat_id=update.effective_chat.id,
-        message_id=progress_message.message_id,
+    # Sort the streaks by current streak, then by longest streak
+    sorted_streaks = sorted(
+        streaks, key=lambda x: (-x["current_streak"], -x["longest_streak"])
     )
 
-    context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="Your image has been added",
-    )
+    # Generate the leaderboard message
+    message = "<b>Leaderboard:</b>\n"
+    for i, user_streak in enumerate(sorted_streaks):
+        message += f"{i+1}. {user_streak['username']} - {user_streak['current_streak']} (Longest streak: {user_streak['longest_streak']})\n"
+
+    return message
 
 
 def reset_streaks(context: CallbackContext) -> None:
@@ -348,6 +466,7 @@ def send_quote(context: CallbackContext) -> None:
 
 
 def welcome_new_user(update: Update, context: CallbackContext) -> None:
+    send_typing(context.bot, update.effective_chat.id)
     new_user = update.message.new_chat_members[0]
     try:
         # help_text = f"Welcome <b>{new_user.username}</b>,\n"
@@ -367,6 +486,7 @@ def welcome_new_user(update: Update, context: CallbackContext) -> None:
             "https://media.giphy.com/media/Yknm7GgtMRkRaP5UMi/giphy.gif",
         ]
         gif = random.choice(gifs)
+        send_typing(context.bot, update.effective_chat.id)
         context.bot.send_animation(
             chat_id=new_user.id,
             animation=gif,
@@ -389,6 +509,7 @@ def welcome_new_user(update: Update, context: CallbackContext) -> None:
         f"@{new_user.username}" if new_user.username else new_user.first_name
     )
     welcome_message = f"Welcome <b>{new_member_mention}</b> to the group! {random.choice(prompts)},\n\n {help_text}"
+    send_typing(context.bot, update.effective_chat.id)
     context.bot.send_animation(
         chat_id=group_chat_id,
         animation=gif,
@@ -405,16 +526,17 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("help", help))
     dispatcher.add_handler(CommandHandler("stats", stats))
-    dispatcher.add_handler(CommandHandler("groupstats", leaderboard))
+    dispatcher.add_handler(CommandHandler("leaderboard", leaderboard))
     dispatcher.add_handler(
         MessageHandler(Filters.status_update.new_chat_members, welcome_new_user)
     )
+    dispatcher.add_handler(CallbackQueryHandler(button_handler))
 
     # Add handler for image messages
     dispatcher.add_handler(MessageHandler(Filters.photo, image))
 
     # Start polling for updates
-    updater.start_polling()
+    updater.start_polling(timeout=123)
 
     # Schedule job to reset streaks every Sunday at midnight
     updater.job_queue.run_daily(
@@ -430,6 +552,12 @@ def main() -> None:
         time=datetime.time(hour=0, minute=0, second=0),
         days=(5,),
         context=dispatcher,
+    )
+
+    updater.job_queue.run_repeating(
+        leaderboard,
+        interval=60 * 60 * 5,  # Run every 5 hours
+        first=0,  # Start immediately
     )
 
     updater.job_queue.run_repeating(send_quote, interval=10, first=0)
