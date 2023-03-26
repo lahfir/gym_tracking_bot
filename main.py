@@ -1,9 +1,16 @@
+from io import BytesIO
 import os
 import random
 import time
 from pymongo import MongoClient
 from datetime import datetime, timedelta
-from telegram import Update, ParseMode
+import requests
+from telegram import (
+    InputMediaPhoto,
+    ReplyKeyboardRemove,
+    Update,
+    ParseMode,
+)
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,12 +19,17 @@ from telegram.ext import (
     MessageHandler,
     Filters,
     CallbackContext,
+    ConversationHandler,
     CallbackQueryHandler,
 )
+from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
 from telegram.error import BadRequest
 from dotenv import load_dotenv
 import logging
 import json
+from typing import List
+from telegram.ext import messagequeue as mq
+import telegramcalendar, utils, messages
 
 quotes = []
 
@@ -47,13 +59,15 @@ def start(update: Update, context: CallbackContext) -> None:
 
 # Define the help command handler
 def help(update: Update, context: CallbackContext) -> None:
+    bot_username = context.bot.get_me().username
     help_text = "The rules:\n\n"
-    help_text += "1. Post only one image per day.\n"
-    help_text += "2. Post at least 3 images per week.\n"
-    help_text += "3. Streak resets every Sunday.\n"
-    help_text += "4. Don't delete any of your previous images.\n\n"
+    help_text += "1. Post at least 3 images per week.\n"
+    help_text += "2. Streak resets every Sunday.\n"
+    help_text += f"Click me @{bot_username} and start me or else I'll not be able to send statistics personally to your DMs\n"
     help_text += "Use /stats to view your image submission statistics."
-    context.bot.send_message(chat_id=update.effective_chat.id, text=help_text)
+    context.bot.send_message(
+        chat_id=update.effective_chat.id, text=help_text, parse_mode=ParseMode.HTML
+    )
 
 
 # Define the stats command handler
@@ -117,7 +131,7 @@ def stats(update: Update, context: CallbackContext) -> None:
     stats_text = f"<b>Your image submission statistics</b>:\n\n"
     stats_text += f"<b>Total images submitted</b>: {user['total_images']}\n"
     stats_text += f"<b>This week's streak</b>: {user['current_streak']} / 7\n"
-    stats_text += f"<b>Average submission rate</b>: {avg_rate:.2f} images/day\n\n"
+    # stats_text += f"<b>Average submission rate</b>: {avg_rate:.2f} images/day\n\n"
     # stats_text += "<b>Leaderboard</b>:\n\n"
 
     # for i, (user_id, total_images) in enumerate(leaderboard[:10]):
@@ -225,7 +239,9 @@ def button_handler(update, context):
                     "current_streak": 1,
                     "longest_streak": 0,
                     "created_at": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
-                    "last_submission": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                    "last_submission": datetime.strptime(
+                        str(now), "%Y-%m-%d %H:%M:%S.%f"
+                    ),
                 }
                 users.insert_one(user_data)
                 message_text = (
@@ -262,7 +278,9 @@ def button_handler(update, context):
                         "$set": {
                             "total_images": total_images,
                             "current_streak": streak,
-                            "last_submission": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                            "last_submission": datetime.strptime(
+                                str(now), "%Y-%m-%d %H:%M:%S.%f"
+                            ),
                         }
                     },
                 )
@@ -272,7 +290,7 @@ def button_handler(update, context):
             image_data = {
                 "user_id": user_id,
                 "image_url": image_url,
-                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                "timestamp": datetime.strptime(str(now), "%Y-%m-%d %H:%M:%S.%f"),
             }
             images.insert_one(image_data)
 
@@ -356,6 +374,9 @@ def button_handler(update, context):
         query.edit_message_text("Okay, let's stop here then.")
     else:
         # If callback data not recognized, do nothing
+        (kind, _, _, _, _) = utils.separate_callback_data(query.data)
+        if kind == messages.CALENDAR_CALLBACK:
+            inline_calendar_handler(update, context)
         pass
     message_id = query.message.message_id
     context.bot.delete_message(chat_id=query.message.chat_id, message_id=message_id)
@@ -470,12 +491,13 @@ def welcome_new_user(update: Update, context: CallbackContext) -> None:
     new_user = update.message.new_chat_members[0]
     try:
         # help_text = f"Welcome <b>{new_user.username}</b>,\n"
+        bot_username = context.bot.get_me().username
         help_text = "The rules:\n\n"
-        help_text += "1. Post only one image per day.\n"
-        help_text += "2. Post at least 3 images per week.\n"
-        help_text += "3. Streak resets every Sunday.\n"
-        help_text += "4. Don't delete any of your previous images.\n\n"
+        help_text += "1. Post at least 3 images per week.\n"
+        help_text += "2. Streak resets every Sunday.\n"
+        help_text += f"Click me @{bot_username} and start me or else I'll not be able to send statistics personally to your DMs\n"
         help_text += "Use /stats to view your image submission statistics."
+
         # Send a welcome message with a random gif
         gifs = [
             "https://media.giphy.com/media/l0MYGb1LuZ3n7dRnO/giphy.gif",
@@ -518,6 +540,283 @@ def welcome_new_user(update: Update, context: CallbackContext) -> None:
     )
 
 
+# Define maximum number of images to send in one message
+MAX_IMAGES_PER_MESSAGE = 10
+
+
+def inline_calendar_handler(update, context):
+    selected, date = telegramcalendar.process_calendar_selection(update, context)
+    if selected:
+        context.bot.send_message(
+            chat_id=update.callback_query.from_user.id,
+            text=str(date.strftime("%d/%m/%Y")),
+            reply_markup=ReplyKeyboardRemove(),
+        )
+
+
+def get_user_images_in_date_range(
+    user_id: int, start_date: datetime, end_date: datetime
+) -> List[str]:
+    """
+    Retrieve all images posted by the user within the specified date range.
+    :param user_id: Telegram user ID
+    :param start_date: Start date of the range
+    :param end_date: End date of the range
+    :return: List of image URLs
+    """
+    start_date = datetime.strptime(start_date, "%d/%m/%Y").date()
+    end_date = datetime.strptime(end_date, "%d/%m/%Y").date()
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
+
+    print(start_datetime, end_datetime)
+
+    cursor = images.find(
+        {
+            "user_id": user_id,
+            "timestamp": {"$gte": start_datetime, "$lte": end_datetime},
+        }
+    )
+    uploaded = []
+    for doc in cursor:
+        uploaded.append(doc["image_url"])
+    return uploaded
+
+
+def get_user_date_ranges(user_id: int) -> List[str]:
+    """
+    Retrieve all the date ranges in which the user has posted images.
+    :param user_id: Telegram user ID
+    :return: List of date range strings
+    """
+    date_ranges = []
+    cursor = images.find({"user_id": user_id})
+    for doc in cursor:
+        doc_date = datetime.strptime(doc["timestamp"], "%Y-%m-%d %H:%M:%S.%f").date()
+        date_range = (
+            f"{doc_date.strftime('%Y-%m-%d')} - {doc_date.strftime('%Y-%m-%d')}"
+        )
+        if date_range not in date_ranges:
+            date_ranges.append(date_range)
+    return date_ranges
+
+
+def get_date_range_from_callback_data(callback_data: str) -> tuple:
+    """
+    Extract the start and end dates from the callback data.
+    :param callback_data: Callback data sent by the user
+    :return: Tuple containing the start and end dates as datetime objects
+    """
+    date_range = callback_data.split(" - ")
+    start_date = datetime.strptime(date_range[0], "%Y-%m-%d")
+    end_date = (
+        datetime.strptime(date_range[1], "%Y-%m-%d")
+        + timedelta(days=1)
+        - timedelta(microseconds=1)
+    )
+    return start_date, end_date
+
+
+# def send_images(
+#     update: Update, context: CallbackContext, image_urls: List[str]
+# ) -> None:
+#     """
+#     Send the images to the user in batches.
+#     :param update: Telegram update object
+#     :param context: Telegram context object
+#     :param image_urls: List of image URLs to send
+#     :return: None
+#     """
+#     message_queue = mq.MessageQueue()
+#     message_queue.set_scheduled_queue(context.bot, context.job_queue)
+#     for i in range(0, len(image_urls), MAX_IMAGES_PER_MESSAGE):
+#         batch = image_urls[i : i + MAX_IMAGES_PER_MESSAGE]
+#         context.bot.send_media_group(
+#             update.effective_chat.id,
+#             [InputMediaPhoto(media=image_url) for image_url in batch],
+#         )
+#     context.job_queue.run_once(message_queue.stop, 5)
+
+
+def get_user_weekly_images_in_range(user_id, start_date, end_date):
+    """
+    Retrieve all images posted by the user within the specified date range.
+    :param user_id: Telegram user ID
+    :param start_date: Start date of the range
+    :param end_date: End date of the range
+    :return: List of image URLs
+    """
+
+    start_date = datetime.strptime(start_date, "%d/%m/%Y").date()
+    end_date = datetime.strptime(end_date, "%d/%m/%Y").date()
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
+
+    cursor = images.find(
+        {
+            "user_id": user_id,
+            "timestamp": {"$gte": start_datetime, "$lte": end_datetime},
+        }
+    )
+    uploaded = []
+    for doc in cursor:
+        uploaded.append(doc["image_url"])
+    return uploaded
+
+
+def send_images(update: Update, context: CallbackContext) -> int:
+    """
+    Get the list of images and send them to the user.
+    :param update: Update object from Telegram
+    :param context: CallbackContext object from Telegram
+    :return: Integer representing the next state in the conversation flow
+    """
+    user_id = update.message.from_user.id
+    start_date = context.user_data["start_date"]
+    end_date = context.user_data["end_date"]
+    user_images = get_user_weekly_images_in_range(user_id, start_date, end_date)
+    if not user_images:
+        update.message.reply_text(
+            "You haven't uploaded any images for this date range."
+        )
+        return ConversationHandler.END
+    photo_list = []
+    context.bot.send_chat_action(
+        chat_id=user_id, action=telegram.ChatAction.UPLOAD_PHOTO
+    )
+    time.sleep(2)  # simulate typing for 2 seconds
+    for image_url in user_images:
+        response = requests.get(image_url)
+        photo = BytesIO(response.content)
+        photo_list.append(InputMediaPhoto(photo))
+    context.bot.send_media_group(chat_id=user_id, media=photo_list)
+    # End conversation
+    context.user_data.pop("state", None)
+    context.user_data.pop("start_date", None)
+    context.user_data.pop("end_date", None)
+    return ConversationHandler.END
+
+
+GET_DATE_RANGE_START = 1
+GET_DATE_RANGE_END = 2
+
+
+def select_date_range_start(update: Update, context: CallbackContext) -> int:
+    """
+    Start the conversation to select the date range.
+    :param update:" = Update object from Telegram
+    :param context: CallbackContext object from Telegram
+    :return: Integer representing the next state in the conversation flow
+    """
+    user_id = update.message.from_user.id
+    context.bot.send_message(
+        chat_id=user_id,
+        text="Please select a start date for the image range:",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    # Set state to GET_DATE_RANGE_START
+    context.user_data["state"] = GET_DATE_RANGE_START
+    context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="CALENDAR",
+        reply_markup=telegramcalendar.create_calendar(),
+    )
+    return GET_DATE_RANGE_START
+
+
+def select_date_range_end(update: Update, context: CallbackContext) -> int:
+    """
+    Get the end date for the selected date range.
+    :param update: Update object from Telegram
+    :param context: CallbackContext object from Telegram
+    :return: Integer representing the next state in the conversation flow
+    """
+    context.user_data["start_date"] = update.message.text
+
+    start_date = datetime.strptime(update.message.text, "%d/%m/%Y").date()
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    print(start_datetime)
+
+    user_id = update.message.from_user.id
+    context.user_data["state"] = GET_DATE_RANGE_END
+    context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="CALENDAR",
+        reply_markup=telegramcalendar.create_calendar(),
+    )
+    return GET_DATE_RANGE_END
+
+
+def validate_date_range(update, context):
+    """Validate the selected date range."""
+    user_id = update.message.from_user.id
+    start_date = context.user_data["start_date"]
+    context.user_data["end_date"] = update.message.text
+    end_date = context.user_data["end_date"]
+    # Do validation here
+    context.bot.send_message(
+        chat_id=user_id,
+        text=f"Selected date range: {start_date} - {end_date}",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+    if start_date > end_date:
+        context.bot.send_message(
+            chat_id=user_id,
+            text="The start date must be before the end date. Please try again.",
+        )
+        return select_date_range_start(update, context)
+
+    images = get_user_images_in_date_range(user_id, start_date, end_date)
+    if images:
+        send_images(update, context)
+        return ConversationHandler.END
+    else:
+        context.bot.send_message(
+            chat_id=user_id,
+            text="No images found for the selected date range. Please try again.",
+        )
+        return select_date_range_start(update, context)
+
+
+def cancel(update: Update, context: CallbackContext) -> int:
+    """
+    Cancel the current operation and return to the main menu.
+    """
+    user = update.message.from_user
+    logger.info("User %s canceled the conversation.", user.first_name)
+    update.message.reply_text(
+        "Operation canceled. Type /help to see the list of available commands.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+conv_handler = ConversationHandler(
+    entry_points=[
+        CommandHandler(
+            "sent_images", select_date_range_start, filters=Filters.chat_type.private
+        )
+    ],
+    states={
+        GET_DATE_RANGE_START: [
+            MessageHandler(
+                Filters.text & ~(Filters.command | Filters.regex("^Done$")),
+                select_date_range_end,
+            )
+        ],
+        GET_DATE_RANGE_END: [
+            MessageHandler(
+                Filters.text & ~(Filters.command | Filters.regex("^Done$")),
+                validate_date_range,
+            )
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+)
+
+
 def main() -> None:
     updater = Updater(token=TOKEN, use_context=True)
     dispatcher = updater.dispatcher
@@ -527,13 +826,13 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("help", help))
     dispatcher.add_handler(CommandHandler("stats", stats))
     dispatcher.add_handler(CommandHandler("leaderboard", leaderboard))
+    dispatcher.add_handler(CallbackQueryHandler(button_handler))
     dispatcher.add_handler(
         MessageHandler(Filters.status_update.new_chat_members, welcome_new_user)
     )
-    dispatcher.add_handler(CallbackQueryHandler(button_handler))
-
     # Add handler for image messages
     dispatcher.add_handler(MessageHandler(Filters.photo, image))
+    dispatcher.add_handler(conv_handler)
 
     # Start polling for updates
     updater.start_polling(timeout=123)
