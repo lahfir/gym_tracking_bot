@@ -29,8 +29,8 @@ import logging
 import json
 from typing import List
 from telegram.ext import messagequeue as mq
-import telegramcalendar, utils, messages
-from quotes import topgquotes
+import utils.telegramcalendar as telegramcalendar, utils.utils as utils, utils.messages as messages
+from utils.quotes import topgquotes
 
 quotes = []
 
