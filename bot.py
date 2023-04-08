@@ -3,7 +3,7 @@ import os
 import random
 import time
 from pymongo import MongoClient
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as tm
 import requests
 from telegram import (
     InputMediaPhoto,
@@ -30,6 +30,7 @@ import json
 from typing import List
 from telegram.ext import messagequeue as mq
 import telegramcalendar, utils, messages
+from quotes import topgquotes
 
 quotes = []
 
@@ -48,12 +49,16 @@ client = MongoClient(MONGO_URL)
 db = client["image_bot"]
 users = db["users"]
 images = db["images"]
+today = datetime.today()
+
+COMMANDS = "Here are the commands you can make use\n\n1. /help - To see how helpful I can be\n2. /leaderboard - To see the leaderboard \n3. /stats - To see your personal statistics \n4. /sent_images - To see the images you sent (Only work in private conversation not in the group)"
 
 # Define the start command handler
 def start(update: Update, context: CallbackContext) -> None:
     context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="Hello, I'm your image bot! Please add me to a group to get started.",
+        text=f"Hello {update.effective_user.username or update.effective_user.full_name}, I'm your Gym tracking bot bot!"
+        + COMMANDS,
     )
 
 
@@ -62,57 +67,52 @@ def help(update: Update, context: CallbackContext) -> None:
     bot_username = context.bot.get_me().username
     help_text = "The rules:\n\n"
     help_text += "1. Post at least 3 images per week.\n"
-    help_text += "2. Streak resets every Sunday.\n"
-    help_text += f"Click me @{bot_username} and start me or else I'll not be able to send statistics personally to your DMs\n"
-    help_text += "Use /stats to view your image submission statistics."
+    help_text += "2. If you fail to upload three images in a day or three days in a row then the streak resets.\n"
+    help_text += (
+        "\nUse /stats to view your image submission statistics. (⚠️ See the below GIF before)\n\n"
+        + COMMANDS
+    )
     context.bot.send_message(
         chat_id=update.effective_chat.id, text=help_text, parse_mode=ParseMode.HTML
     )
 
+    # help_text = f"\n\nClick me @{bot_username} and <b>START<b> me or else I'll not be able to send statistics personally to your DMs\n"
+    # send_typing(context.bot, update.effective_chat.id)
+    # context.bot.send_message(
+    #     chat_id=update.effective_chat.id,
+    #     text=help_text,
+    #     parse_mode=ParseMode.HTML,
+    # )
 
-# Define the stats command handler
-# def stats(update: Update, context: CallbackContext) -> None:
-#     gifs = [
-#         "https://media.giphy.com/media/3o6ZsYzuLyRfSGX4f6/giphy.gif",
-#         "https://media.giphy.com/media/xTiTnqZMwp5twnUKfS/giphy.gif",
-#         "https://media.giphy.com/media/EzjCaYFnApVy8/giphy.gif",
-#     ]
 
-#     user_id = update.effective_user.id
-#     user = users.find_one({"user_id": user_id})
-#     if user is None:
-#         context.bot.send_message(
-#             chat_id=update.effective_chat.id,
-#             text="You haven't submitted any images yet.",
-#         )
-#         return
+TopGGifs = [
+    "https://tenor.com/bXDvy.gif",
+    "https://tenor.com/bWtfB.gif",
+    "https://tenor.com/bYvZF.gif",
+    "https://tenor.com/bDIZe.gif",
+    "https://tenor.com/bR6VW.gif",
+]
 
-#     stats_text = f"<b>Your image submission statistics</b>:\n\n"
-#     stats_text += f"<b>Total images submitted</b>: {user['total_images']}\n"
-#     stats_text += f"<b>This week's streak</b>: {user['current_streak']} / 7\n"
-#     # stats_text += f"<b>Current streak</b>: {user['current_streak']} / 3"
-#     context.bot.send_animation(
-#         chat_id=update.effective_chat.id,
-#         animation=random.choice(gifs),
-#         caption=stats_text,
-#         parse_mode=ParseMode.HTML,
-#     )
+
+# Define the help command handler
+def motivation(update: Update, context: CallbackContext) -> None:
+    context.bot.send_animation(
+        animation=random.choice(TopGGifs),
+        chat_id=update.effective_chat.id,
+        caption=random.choice(topgquotes),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 def stats(update: Update, context: CallbackContext) -> None:
-    gifs = [
-        "https://media.giphy.com/media/3o6ZsYzuLyRfSGX4f6/giphy.gif",
-        "https://media.giphy.com/media/xTiTnqZMwp5twnUKfS/giphy.gif",
-        "https://media.giphy.com/media/EzjCaYFnApVy8/giphy.gif",
-    ]
+    send_typing(context.bot, update.effective_chat.id)
 
     user_id = update.effective_user.id
     user = users.find_one({"user_id": user_id})
     if user is None:
-        send_typing(context.bot, update.effective_chat.id)
         context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text="You haven't submitted any images yet.",
+            text="It seems you haven't submitted any images yet, So your statistics are empty. Start sending images to see your statistics",
         )
         return
 
@@ -121,7 +121,9 @@ def stats(update: Update, context: CallbackContext) -> None:
     if total_images == 0:
         avg_rate = 0
     else:
-        created_date = datetime.strptime(user["created_at"], "%Y-%m-%d %H:%M:%S.%f")
+        created_date = datetime.strptime(
+            str(user["created_at"]), "%Y-%m-%d %H:%M:%S.%f"
+        )
         days_since_created = (datetime.now() - created_date).days
         try:
             avg_rate = total_images / days_since_created
@@ -130,43 +132,33 @@ def stats(update: Update, context: CallbackContext) -> None:
 
     stats_text = f"<b>Your image submission statistics</b>:\n\n"
     stats_text += f"<b>Total images submitted</b>: {user['total_images']}\n"
-    stats_text += f"<b>This week's streak</b>: {user['current_streak']} / 7\n"
+    if user["current_streak"] > 3:
+        stats_text += f"<b>Your total streak</b>: {user['current_streak']} 🔥\n"
+    elif user["current_streak"] < 3:
+        stats_text += f"<b>Your total streak</b>: {user['current_streak']} \n"
+    elif user["current_streak"] == 3:
+        stats_text += f"<b>Your total streak</b>: {user['current_streak']} ✅\n"
     # stats_text += f"<b>Average submission rate</b>: {avg_rate:.2f} images/day\n\n"
     # stats_text += "<b>Leaderboard</b>:\n\n"
 
     # for i, (user_id, total_images) in enumerate(leaderboard[:10]):
     #     stats_text += f"{i+1}. {user_id}: {total_images}\n"
-
-    context.bot.send_animation(
-        chat_id=update.effective_user.id,
-        animation=random.choice(gifs),
-        caption=stats_text,
-        parse_mode=ParseMode.HTML,
-    )
-
-    # Define the start and end dates for the week you want to retrieve images for
-    start_of_week = datetime.now().date() - timedelta(days=datetime.now().weekday())
-    end_of_week = start_of_week + timedelta(days=7)
-
-    # Convert start_of_week and end_of_week to datetime.datetime objects
-    start_of_week = datetime.combine(start_of_week, datetime.min.time())
-    end_of_week = datetime.combine(end_of_week, datetime.max.time())
-
-    # Find all images uploaded during the current week
-    imagesSentByUser = images.find(
-        {
-            "user_id": user_id,
-            "timestamp": {"$gte": start_of_week, "$lt": end_of_week},
-        }
-    )
-
-    for image in imagesSentByUser:
+    bot_username = context.bot.get_me().username
+    try:
         send_typing(context.bot, update.effective_chat.id)
-        context.bot.send_photo(
-            chat_id=update.effective_chat.id,
-            photo=image["image_url"],
+        context.bot.send_animation(
+            chat_id=update.effective_user.id,
+            animation=random.choice(TopGGifs),
+            caption=stats_text,
             parse_mode=ParseMode.HTML,
         )
+    except Exception as e:
+        send_typing(context.bot, update.effective_chat.id)
+        if e == "Forbidden: bot was blocked by the user":
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"You've not started me yet or have blocked me. Please Click @{bot_username} and <b>START</b> or else I'll not be able to send statistics personally to your DMs\n",
+            )
 
 
 def leaderboard(update: Update, context: CallbackContext) -> None:
@@ -181,12 +173,12 @@ def leaderboard(update: Update, context: CallbackContext) -> None:
     sorted_streaks = sorted(streaks, key=lambda x: x["current_streak"], reverse=True)
     streakText = f"<b>LEADERBOARD</b>\n\n"
     for i in range(0, len(sorted_streaks)):
-        if sorted_streaks[i]["current_streak"] >= 3:
-            streakText += f"{i+1}. {sorted_streaks[i]['username']} - {sorted_streaks[i]['current_streak']}/7 ✅\n"
-        elif sorted_streaks[i]["current_streak"] >= 5:
-            streakText += f"{i+1}. {sorted_streaks[i]['username']} - {sorted_streaks[i]['current_streak']}/7 🔥\n"
+        if sorted_streaks[i]["current_streak"] == 3:
+            streakText += f"{i+1}. {sorted_streaks[i]['username']} - {sorted_streaks[i]['current_streak']} ✅\n"
+        elif sorted_streaks[i]["current_streak"] > 3:
+            streakText += f"{i+1}. {sorted_streaks[i]['username']} - {sorted_streaks[i]['current_streak']} 🔥\n"
         else:
-            streakText += f"{i+1}. {sorted_streaks[i]['username']} - {sorted_streaks[i]['current_streak']}/7\n"
+            streakText += f"{i+1}. {sorted_streaks[i]['username']} - {sorted_streaks[i]['current_streak']}\n"
     send_typing(context.bot, update.effective_chat.id)
     context.bot.send_message(
         chat_id=update.effective_chat.id, text=streakText, parse_mode=ParseMode.HTML
@@ -198,6 +190,21 @@ def send_typing(bot, chat_id):
     time.sleep(2)  # simulate typing for 2 seconds
 
 
+def maintain_streak(streak_count, last_streak_date):
+    if last_streak_date is None:
+        # If there is no last streak date, start a new streak and return 1
+        return 1, today
+    elif today.date() == last_streak_date.date():
+        # If the streak was already maintained today, return the same streak count and date
+        return None, last_streak_date
+    elif (today.date() - last_streak_date.date()).days == 1:
+        # If the streak was maintained yesterday, increase the streak count and return the new count and today's date
+        return streak_count + 1, today
+    else:
+        # If the streak was broken, start a new streak and return 1
+        return 1, today
+
+
 def button_handler(update, context):
     query = update.callback_query
     if query.data == "yes":
@@ -205,23 +212,6 @@ def button_handler(update, context):
         photo_id = context.user_data.get("file_id")
         if photo_id:
             send_typing(context.bot, update.effective_chat.id)
-
-            # # Define the progress bar message
-            # progress_message = context.bot.send_message(
-            #     chat_id=update.effective_chat.id,
-            #     text="Uploading images... [                    ]",
-            #     parse_mode=ParseMode.MARKDOWN,
-            # )
-
-            # # Simulate image upload
-            # for i in range(1, 11):
-            #     sleep_time = random.uniform(0, 0.000005)
-            #     time.sleep(sleep_time)
-            #     context.bot.edit_message_text(
-            #         chat_id=update.effective_chat.id,
-            #         message_id=progress_message.message_id,
-            #         text=f"Uploading images... {i*10}%",
-            #     )
 
             user_id = update.effective_user.id
             user = users.find_one({"user_id": user_id})
@@ -238,52 +228,42 @@ def button_handler(update, context):
                     "total_images": 1,
                     "current_streak": 1,
                     "longest_streak": 0,
-                    "created_at": now.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                    "created_at": datetime.strptime(str(now), "%Y-%m-%d %H:%M:%S.%f"),
                     "last_submission": datetime.strptime(
                         str(now), "%Y-%m-%d %H:%M:%S.%f"
                     ),
+                    "streak_reset_on": today,
                 }
                 users.insert_one(user_data)
-                message_text = (
-                    f"{user_data['username']} submitted his 1st gym proof of the week"
-                )
-                send_typing(context.bot, update.effective_chat.id)
-                # Send the message for the streak
-                context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=message_text,
-                )
             else:
                 total_images = user["total_images"] + 1
-                last_submission = datetime.strptime(
-                    user["last_submission"], "%Y-%m-%d %H:%M:%S.%f"
-                )
+                last_submission = datetime.strptime(str(now), "%Y-%m-%d %H:%M:%S.%f")
 
-                message_text = ""
-
-                streak = user["current_streak"]
-                # if last_submission.date() < now.date():
-                #     streak += 1
-                # if streak <= 3:
-                #     message_text = f"{user['username']} submitted his {streak}{'st' if streak>1 else 'nd' if streak>2 else 'rd'} gym proof of the week"
-                # else:
-                #     message_text = (
-                #         f"{user['username']} submitted his {streak}th gym proof of the week"
-                #     )
-                # if streak > user.get("longest_streak", 0):
-                #     users.update_one({"user_id": user_id}, {"$set": {"longest_streak": streak}})
-                users.update_one(
-                    {"user_id": user_id},
-                    {
-                        "$set": {
-                            "total_images": total_images,
-                            "current_streak": streak,
-                            "last_submission": datetime.strptime(
-                                str(now), "%Y-%m-%d %H:%M:%S.%f"
-                            ),
-                        }
-                    },
+                streak, last_submission = maintain_streak(
+                    user["current_streak"], user["last_submission"]
                 )
+                print(streak, last_submission)
+                if streak != None:
+                    users.update_one(
+                        {"user_id": user_id},
+                        {
+                            "$set": {
+                                "total_images": total_images,
+                                "current_streak": streak,
+                                "last_submission": last_submission,
+                            }
+                        },
+                    )
+                    user["current_streak"] = streak
+                else:
+                    users.update_one(
+                        {"user_id": user_id},
+                        {
+                            "$set": {
+                                "total_images": total_images,
+                            }
+                        },
+                    )
 
             # Add the image to the database
             image_url = context.user_data.get("image_url")
@@ -295,9 +275,9 @@ def button_handler(update, context):
             images.insert_one(image_data)
 
             congrats_animations = [
-                "https://media.giphy.com/media/xT8qBepJQzUjXpeWU8/giphy.gif",
+                "https://tenor.com/bUji2.gif",
                 "https://media.giphy.com/media/jJQC2puVZpTMO4vUs0/giphy.gif",
-                "https://media.giphy.com/media/3oz8xAFtqoOUUrsh7W/giphy.gif",
+                "https://tenor.com/b1mml.gif",
                 "https://media.giphy.com/media/g9582DNuQppxC/giphy.gif",
                 "https://media.giphy.com/media/fdyZ3qI0GVZC0/giphy.gif",
             ]
@@ -308,40 +288,12 @@ def button_handler(update, context):
                 context.bot.send_animation(
                     chat_id=update.effective_chat.id,
                     animation=random.choice(congrats_animations),
-                    caption="Congratulations! You have completed your weekly image submission.",
-                )
-            elif (
-                user is not None
-                and now.weekday() == 6
-                and (
-                    user.get("last_submission") is not None
-                    or user_data.get("last_submission") is not None
-                )
-            ):
-                users.update_one(
-                    {"user_id": user_id}, {"$set": {"current_streak": 0}}
-                )  # Reset the streak
-                send_typing(context.bot, update.effective_chat.id)
-                context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="Your weekly streak has been reset.",
+                    caption="Congratulations!",
                 )
 
-            # # Delete the progress bar message
-            # context.bot.delete_message(
-            #     chat_id=update.effective_chat.id,
-            #     message_id=progress_message.message_id,
-            # )
-
-            # context.bot.send_message(
-            #     chat_id=update.effective_chat.id,
-            #     text="Your image has been added",
-            # )
-
+            user = users.find_one({"user_id": user_id})
             # Send gym proof count
-            current_streak = (
-                user.get("current_streak", 0) or user_data["current_streak"]
-            )
+            current_streak = user.get("total_images", 0)
             if current_streak == 1:
                 count_text = "1st"
             elif current_streak == 2:
@@ -351,9 +303,9 @@ def button_handler(update, context):
             else:
                 return  # Do not send anything if streak is less than 1 or more than 3
 
-            message = f"{user.get('username')} submitted his {count_text} gym proof of the week."
-            send_typing(context.bot, update.effective_chat.id)
-            context.bot.send_message(chat_id=update.effective_chat.id, text=message)
+            # message = f"{user.get('username')} submitted his {count_text} gym proof of the week."
+            # send_typing(context.bot, update.effective_chat.id)
+            # context.bot.send_message(chat_id=update.effective_chat.id, text=message)
 
             # Send leaderboard
             send_typing(context.bot, update.effective_chat.id)
@@ -371,15 +323,25 @@ def button_handler(update, context):
             )
     elif query.data == "no":
         query.answer()
-        query.edit_message_text("Okay, let's stop here then.")
+        try:
+            query.edit_message_text("Send a real workout pic you pussy")
+        except:
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Okay, Pic rejected",
+                parse_mode=ParseMode.HTML,
+            )
+    elif query.data == "date_selected":
+        return GET_DATE_RANGE_END
     else:
-        # If callback data not recognized, do nothing
-        (kind, _, _, _, _) = utils.separate_callback_data(query.data)
-        if kind == messages.CALENDAR_CALLBACK:
-            inline_calendar_handler(update, context)
-        pass
-    message_id = query.message.message_id
-    context.bot.delete_message(chat_id=query.message.chat_id, message_id=message_id)
+        try:
+            # If callback data not recognized, do nothing
+            (kind, _, _, _, _) = utils.separate_callback_data(query.data)
+            if kind == messages.CALENDAR_CALLBACK:
+                inline_calendar_handler(update, context)
+            pass
+        except Exception as e:
+            pass
 
 
 # Define the image message handler
@@ -395,6 +357,11 @@ def image(update: Update, context: CallbackContext) -> None:
     file_id = update.message.photo[-1].file_id
     image_url = context.bot.get_file(file_id).file_path
 
+    # Delete the message from the group chat
+    context.bot.delete_message(
+        chat_id=update.effective_chat.id, message_id=update.message.message_id
+    )
+
     # Ask the user if the photo is gym proof
     keyboard = [
         [
@@ -403,8 +370,11 @@ def image(update: Update, context: CallbackContext) -> None:
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    sent_message = update.message.reply_text(
-        "Is this gym proof?", reply_markup=reply_markup
+    sent_message = context.bot.send_photo(
+        chat_id="1243113998",
+        photo=file_id,
+        caption="Do you accept this as Gym Proof?",
+        reply_markup=reply_markup,
     )
 
     # Store the photo file ID in context for later use
@@ -421,19 +391,23 @@ def get_leaderboard(users) -> str:
             {
                 "username": user.get("username"),
                 "current_streak": user.get("current_streak", 0),
-                "longest_streak": user.get("longest_streak", 0),
             }
         )
 
     # Sort the streaks by current streak, then by longest streak
-    sorted_streaks = sorted(
-        streaks, key=lambda x: (-x["current_streak"], -x["longest_streak"])
-    )
+    sorted_streaks = sorted(streaks, key=lambda x: -x["current_streak"])
 
     # Generate the leaderboard message
     message = "<b>Leaderboard:</b>\n"
     for i, user_streak in enumerate(sorted_streaks):
-        message += f"{i+1}. {user_streak['username']} - {user_streak['current_streak']} (Longest streak: {user_streak['longest_streak']})\n"
+        if user_streak["current_streak"] < 3:
+            message += (
+                f"{i+1}. {user_streak['username']} - {user_streak['current_streak']}\n"
+            )
+        elif user_streak["current_streak"] == 3:
+            message += f"{i+1}. {user_streak['username']} - {user_streak['current_streak']} ✅\n"
+        elif user_streak["current_streak"] > 3:
+            message += f"{i+1}. {user_streak['username']} - {user_streak['current_streak']} 🔥\n"
 
     return message
 
@@ -486,35 +460,35 @@ def send_quote(context: CallbackContext) -> None:
     )
 
 
+def get_gif_data():
+    """Reads binary data of the GIF file"""
+    with open("START.gif", "rb") as f:
+        gif_data = f.read()
+    return gif_data
+
+
 def welcome_new_user(update: Update, context: CallbackContext) -> None:
     send_typing(context.bot, update.effective_chat.id)
     new_user = update.message.new_chat_members[0]
+
+    # Send a welcome message with a random gif
+    gifs = [
+        "https://media.giphy.com/media/l0MYGb1LuZ3n7dRnO/giphy.gif",
+        "https://media.giphy.com/media/Ae7SI3LoPYj8Q/giphy.gif",
+        "https://tenor.com/bWxWX.gif",
+        "https://media.giphy.com/media/5L57f5fI3f2716NaJ3/giphy.gif",
+        "https://media.giphy.com/media/LpDmTYtmOJLXxkMB3H/giphy.gif",
+        "https://tenor.com/bUBWC.gif",
+    ]
+
     try:
         # help_text = f"Welcome <b>{new_user.username}</b>,\n"
         bot_username = context.bot.get_me().username
         help_text = "The rules:\n\n"
         help_text += "1. Post at least 3 images per week.\n"
-        help_text += "2. Streak resets every Sunday.\n"
-        help_text += f"Click me @{bot_username} and start me or else I'll not be able to send statistics personally to your DMs\n"
-        help_text += "Use /stats to view your image submission statistics."
+        help_text += "2. If you fail to upload three images in a day or three days in a row then the streak resets.\n"
+        help_text += "\nUse /stats to view your image submission statistics. (⚠️ See the below GIF before)"
 
-        # Send a welcome message with a random gif
-        gifs = [
-            "https://media.giphy.com/media/l0MYGb1LuZ3n7dRnO/giphy.gif",
-            "https://media.giphy.com/media/Ae7SI3LoPYj8Q/giphy.gif",
-            "https://media.giphy.com/media/ypqHf6pQ5kQEg/giphy.gif",
-            "https://media.giphy.com/media/5L57f5fI3f2716NaJ3/giphy.gif",
-            "https://media.giphy.com/media/LpDmTYtmOJLXxkMB3H/giphy.gif",
-            "https://media.giphy.com/media/Yknm7GgtMRkRaP5UMi/giphy.gif",
-        ]
-        gif = random.choice(gifs)
-        send_typing(context.bot, update.effective_chat.id)
-        context.bot.send_animation(
-            chat_id=new_user.id,
-            animation=gif,
-            caption=help_text,
-            parse_mode=ParseMode.HTML,
-        )
     except Exception as e:
         print(e)
 
@@ -530,12 +504,23 @@ def welcome_new_user(update: Update, context: CallbackContext) -> None:
     new_member_mention = (
         f"@{new_user.username}" if new_user.username else new_user.first_name
     )
-    welcome_message = f"Welcome <b>{new_member_mention}</b> to the group! {random.choice(prompts)},\n\n {help_text}"
+
+    gif = random.choice(gifs)
+
+    welcome_message = f"\nWelcome <b>{new_member_mention}</b> to the group! {random.choice(prompts)},\n\n {help_text}"
     send_typing(context.bot, update.effective_chat.id)
     context.bot.send_animation(
         chat_id=group_chat_id,
         animation=gif,
         caption=welcome_message,
+        parse_mode=ParseMode.HTML,
+    )
+
+    help_text = f"\n\nClick me @{bot_username} and <b>START</b> me or else I'll not be able to send statistics personally to your DMs\n"
+    send_typing(context.bot, update.effective_chat.id)
+    context.bot.send_message(
+        chat_id=group_chat_id,
+        text=help_text,
         parse_mode=ParseMode.HTML,
     )
 
@@ -547,9 +532,20 @@ MAX_IMAGES_PER_MESSAGE = 10
 def inline_calendar_handler(update, context):
     selected, date = telegramcalendar.process_calendar_selection(update, context)
     if selected:
+        user_id = update.callback_query.from_user.id
         context.bot.send_message(
-            chat_id=update.callback_query.from_user.id,
-            text=str(date.strftime("%d/%m/%Y")),
+            chat_id=user_id,
+            text=f"You have selected the date {date.strftime('%d/%m/%Y')}. Please click the button below to confirm:",
+            reply_markup=telegram.ReplyKeyboardMarkup(
+                [[telegram.KeyboardButton(text=f"{date.strftime('%d/%m/%Y')}")]],
+                resize_keyboard=True,
+            ),
+        )
+    elif update.message.text.startswith("Confirm"):
+        user_id = update.message.chat_id
+        context.bot.send_message(
+            chat_id=user_id,
+            text="Confirmed",
             reply_markup=ReplyKeyboardRemove(),
         )
 
@@ -564,8 +560,8 @@ def get_user_images_in_date_range(
     :param end_date: End date of the range
     :return: List of image URLs
     """
-    start_date = datetime.strptime(start_date, "%d/%m/%Y").date()
-    end_date = datetime.strptime(end_date, "%d/%m/%Y").date()
+    start_date = datetime.strptime(str(start_date), "%d/%m/%Y").date()
+    end_date = datetime.strptime(str(end_date), "%d/%m/%Y").date()
     start_datetime = datetime.combine(start_date, datetime.min.time())
     end_datetime = datetime.combine(end_date, datetime.max.time())
 
@@ -592,7 +588,9 @@ def get_user_date_ranges(user_id: int) -> List[str]:
     date_ranges = []
     cursor = images.find({"user_id": user_id})
     for doc in cursor:
-        doc_date = datetime.strptime(doc["timestamp"], "%Y-%m-%d %H:%M:%S.%f").date()
+        doc_date = datetime.strptime(
+            str(doc["timestamp"]), "%Y-%m-%d %H:%M:%S.%f"
+        ).date()
         date_range = (
             f"{doc_date.strftime('%Y-%m-%d')} - {doc_date.strftime('%Y-%m-%d')}"
         )
@@ -608,9 +606,9 @@ def get_date_range_from_callback_data(callback_data: str) -> tuple:
     :return: Tuple containing the start and end dates as datetime objects
     """
     date_range = callback_data.split(" - ")
-    start_date = datetime.strptime(date_range[0], "%Y-%m-%d")
+    start_date = datetime.strptime(str(date_range[0]), "%Y-%m-%d")
     end_date = (
-        datetime.strptime(date_range[1], "%Y-%m-%d")
+        datetime.strptime(str(date_range[1]), "%Y-%m-%d")
         + timedelta(days=1)
         - timedelta(microseconds=1)
     )
@@ -647,8 +645,8 @@ def get_user_weekly_images_in_range(user_id, start_date, end_date):
     :return: List of image URLs
     """
 
-    start_date = datetime.strptime(start_date, "%d/%m/%Y").date()
-    end_date = datetime.strptime(end_date, "%d/%m/%Y").date()
+    start_date = datetime.strptime(str(start_date), "%d/%m/%Y").date()
+    end_date = datetime.strptime(str(end_date), "%d/%m/%Y").date()
     start_datetime = datetime.combine(start_date, datetime.min.time())
     end_datetime = datetime.combine(end_date, datetime.max.time())
 
@@ -699,6 +697,7 @@ def send_images(update: Update, context: CallbackContext) -> int:
 
 GET_DATE_RANGE_START = 1
 GET_DATE_RANGE_END = 2
+CONFIRM_DATE_RANGE = 3
 
 
 def select_date_range_start(update: Update, context: CallbackContext) -> int:
@@ -709,18 +708,19 @@ def select_date_range_start(update: Update, context: CallbackContext) -> int:
     :return: Integer representing the next state in the conversation flow
     """
     user_id = update.message.from_user.id
-    context.bot.send_message(
-        chat_id=user_id,
-        text="Please select a start date for the image range:",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    # context.bot.send_message(
+    #     chat_id=user_id,
+    #     text="Please select a start date for the image range:",
+    #     reply_markup=ReplyKeyboardRemove(),
+    # )
     # Set state to GET_DATE_RANGE_START
     context.user_data["state"] = GET_DATE_RANGE_START
     context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="CALENDAR",
+        text="Please select a start date for the image range:",
         reply_markup=telegramcalendar.create_calendar(),
     )
+
     return GET_DATE_RANGE_START
 
 
@@ -733,7 +733,7 @@ def select_date_range_end(update: Update, context: CallbackContext) -> int:
     """
     context.user_data["start_date"] = update.message.text
 
-    start_date = datetime.strptime(update.message.text, "%d/%m/%Y").date()
+    start_date = datetime.strptime(str(update.message.text), "%d/%m/%Y").date()
     start_datetime = datetime.combine(start_date, datetime.min.time())
     print(start_datetime)
 
@@ -741,7 +741,7 @@ def select_date_range_end(update: Update, context: CallbackContext) -> int:
     context.user_data["state"] = GET_DATE_RANGE_END
     context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="CALENDAR",
+        text="Please select a end date for the image range:",
         reply_markup=telegramcalendar.create_calendar(),
     )
     return GET_DATE_RANGE_END
@@ -826,13 +826,14 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("help", help))
     dispatcher.add_handler(CommandHandler("stats", stats))
     dispatcher.add_handler(CommandHandler("leaderboard", leaderboard))
+    dispatcher.add_handler(CommandHandler("motivation", motivation))
     dispatcher.add_handler(CallbackQueryHandler(button_handler))
+    dispatcher.add_handler(conv_handler)
     dispatcher.add_handler(
         MessageHandler(Filters.status_update.new_chat_members, welcome_new_user)
     )
     # Add handler for image messages
     dispatcher.add_handler(MessageHandler(Filters.photo, image))
-    dispatcher.add_handler(conv_handler)
 
     # Start polling for updates
     updater.start_polling(timeout=123)
@@ -840,26 +841,30 @@ def main() -> None:
     # Schedule job to reset streaks every Sunday at midnight
     updater.job_queue.run_daily(
         reset_streaks,
-        time=datetime.time(hour=0, minute=0, second=0),
+        time=tm(hour=0, minute=0, second=0),
         days=(6,),
-        context=dispatcher,
     )
 
     # Schedule job to warn users who haven't submitted 3 images by Saturday at midnight
     updater.job_queue.run_daily(
-        warn_users,
-        time=datetime.time(hour=0, minute=0, second=0),
+        callback=warn_users,
+        time=tm(hour=0, minute=0, second=0),
         days=(5,),
-        context=dispatcher,
     )
+    try:
+        updater.job_queue.run_daily(
+            callback=leaderboard,
+            time=tm(hour=0, minute=0, second=0),
+            days=(0, 1, 2, 3, 4, 5, 6),  # Run every day of the week
+        )
 
-    updater.job_queue.run_repeating(
-        leaderboard,
-        interval=60 * 60 * 5,  # Run every 5 hours
-        first=0,  # Start immediately
-    )
-
-    updater.job_queue.run_repeating(send_quote, interval=10, first=0)
+        updater.job_queue.run_daily(
+            callback=send_quote,
+            time=tm(hour=12, minute=0, second=0),  # 12:00 AM
+            days=(0, 1, 2, 3, 4, 5, 6),  # Every day,
+        )
+    except Exception as e:
+        pass
 
     # Log errors
     updater.dispatcher.add_error_handler(error)

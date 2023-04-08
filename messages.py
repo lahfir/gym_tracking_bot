@@ -8,3 +8,6 @@ jcalendar_message = "لطفا تاریخی را انتخاب کنید:"
 
 calendar_response_message = "You selected %s"
 jcalendar_response_message = "شما تاریخ %s را انتخاب کردید"
+
+CONFIRM_DATE_RANGE_CALLBACK = "CONFIRM_DATE_RANGE"
+CONFIRM_DATE_CALLBACK = "CONFIRM_DATE"
